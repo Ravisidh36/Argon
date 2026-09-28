@@ -55,17 +55,17 @@ def index_document(path):
 index_document_tool = {
     "name": "index_document",
     "description": (
-        "Parse a supported document with Docling, convert it to structured "
-        "Markdown, chunk it, and prepare it for semantic retrieval."
+        "Parse and index a document for retrieval. Supports PDF, DOCX, PPTX, XLSX, HTML, and more. "
+        "Call this when the user asks to 'index', 'load', or 'add' a file."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the document to index."
+                "description": "Path to the document file (e.g. '2.pdf', 'report.docx')",
             }
         },
-        "required": ["path"]
-    }
+        "required": ["path"],
+    },
 }

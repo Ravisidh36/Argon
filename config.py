@@ -13,3 +13,7 @@ MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5-coder:3b")
 # Fallback API keys (only if MODEL_PROVIDER == "gemini")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gemini-2.5-flash")
+
+# Embedding model — changing this REQUIRES rebuilding the FAISS index.
+# Run: python -m scripts.rebuild_index
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")

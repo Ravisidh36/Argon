@@ -36,3 +36,24 @@ def rerank(query, documents, top_k=3):
     scored_docs.sort(key=lambda pair: pair[0], reverse=True)
 
     return [doc for _, doc in scored_docs[:top_k]]
+
+
+def rerank_with_scores(
+    query: str,
+    documents: list,
+    top_k: int = 3,
+) -> list[tuple[float, object]]:
+    """
+    Same as rerank() but returns (score, doc) pairs so callers can surface
+    relevance scores in their output for observability/debugging.
+    """
+    if not documents:
+        return []
+
+    model = get_reranker()
+    pairs = [(query, doc.page_content) for doc in documents]
+    scores = model.predict(pairs)
+
+    scored = sorted(zip(scores, documents), key=lambda p: p[0], reverse=True)
+    return [(float(s), d) for s, d in scored[:top_k]]
+
