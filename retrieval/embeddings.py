@@ -1,5 +1,6 @@
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/gemini-embedding-001"
+# Local embedding model: runs 100% locally on CPU/GPU without any API keys
+embeddings = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
 )

@@ -2,7 +2,7 @@ from google import genai
 from google.genai import types
 from config import GEMINI_API_KEY, CHAT_MODEL
 from retrieval import index_document, retrieve
-from tools import file_access
+from tools import file_access, calculator, web_search
 
 def get_gemini_tools():
 
@@ -16,6 +16,8 @@ def get_gemini_tools():
                 file_access.file_write,
                 file_access.files_list,
                 file_access.file_delete,
+                calculator.calculate_tool,
+                web_search.web_search_tool,
             ]
         )
     ]

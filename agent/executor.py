@@ -1,5 +1,5 @@
 from retrieval import index_document, retrieve
-from tools import file_access
+from tools import file_access, calculator, web_search
 
 
 tool_registry = {
@@ -10,6 +10,8 @@ tool_registry = {
     "write_file": file_access.write_file,
     "append_file": file_access.append_file,
     "dlt_file": file_access.dlt_file,
+    "calculate": calculator.calculate,
+    "web_search": web_search.web_search,
 }
 
 

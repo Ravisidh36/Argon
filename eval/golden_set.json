@@ -1,0 +1,42 @@
+[
+  {
+    "query": "Who wrote this document and when?",
+    "relevant_chunk_ids": ["Articles.pdf::0"]
+  },
+  {
+    "query": "What are the three articles in the English language?",
+    "relevant_chunk_ids": ["Articles.pdf::0"]
+  },
+  {
+    "query": "Give me examples of using a or an with general singular nouns.",
+    "relevant_chunk_ids": ["Articles.pdf::1", "Articles.pdf::2"]
+  },
+  {
+    "query": "Why can't uncountable nouns take 'a' or 'an'?",
+    "relevant_chunk_ids": ["Articles.pdf::3", "Articles.pdf::4"]
+  },
+  {
+    "query": "List some examples of common uncountable nouns.",
+    "relevant_chunk_ids": ["Articles.pdf::4"]
+  },
+  {
+    "query": "How do I decide whether to use a or an based on pronunciation?",
+    "relevant_chunk_ids": ["Articles.pdf::4", "Articles.pdf::5"]
+  },
+  {
+    "query": "When do you use 'the' before a superlative adjective?",
+    "relevant_chunk_ids": ["Articles.pdf::6", "Articles.pdf::7"]
+  },
+  {
+    "query": "What are the answers to Activity 1?",
+    "relevant_chunk_ids": ["Articles.pdf::7", "Articles.pdf::8"]
+  },
+  {
+    "query": "What is the answer to activity 2 question 3 about sugar and milk?",
+    "relevant_chunk_ids": ["Articles.pdf::9"]
+  },
+  {
+    "query": "What sources or references are cited in this document?",
+    "relevant_chunk_ids": ["Articles.pdf::10"]
+  }
+]
