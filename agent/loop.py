@@ -1,17 +1,8 @@
 from agent.executor import ToolExecutor
-from agent.context_builder import ContextBuilder
 
 
 class AgentLoop:
     """CLI-style agent loop with iterative multi-tool execution."""
-
-    LLM_RESULT_TOOLS = {
-        "retrieve_document",
-        "read_file",
-        "list_files",
-        "calculate",
-        "web_search",
-    }
 
     ACTION_TOOLS = {
         "write_file",
@@ -25,7 +16,6 @@ class AgentLoop:
     def __init__(self, model):
         self.model = model
         self.executor = ToolExecutor()
-        self.context_builder = ContextBuilder()
 
     def start(self, tools=None, system_instruction=None):
         self.model.start_chat(
@@ -37,89 +27,73 @@ class AgentLoop:
         return self.model.create_response(text)
 
     @staticmethod
-    def _format_results(results):
+    def _tool_summary(results):
         parts = []
         for item in results:
-            result = str(item.get("result", "")).strip()
-            if result:
-                parts.append(f"[{item['name']}]\n{result}")
-        return "\n\n".join(parts)
+            name = item["name"]
+            if item.get("success", False):
+                parts.append(f"{name}: {item.get('result', '')}")
+            else:
+                parts.append(f"{name}: ERROR: {item.get('error', 'Unknown error')}")
+        return "\n".join(parts)
 
     def run(self, query):
         """
-        Keep executing until the model stops requesting tools.
+        Execute a complete multi-step task.
 
-        A single model response may contain several independent tool calls.
-        If the task is multi-step, the tool results are fed back to the model
-        so it can request the next dependent operations. Only the final turn
-        is returned to the CLI user.
+        Tool results are returned to the model using the native assistant/tool
+        message protocol. This is important for Ollama/Qwen: the model sees
+        exactly which calls it made and which results came back, so it can
+        continue dependent workflows instead of hallucinating that they ran.
         """
-        current_query = query
-        all_results = []
+        continuation = query
 
         for round_number in range(self.MAX_TOOL_ROUNDS):
-            response = self.model.generate(current_query)
+            response = self.model.generate(continuation)
 
-            # The model has decided that no more tools are needed.
+            # No more tool calls: the model has produced the final response.
             if not response.function_calls:
                 return response
 
-            round_results = []
-            failed = False
+            results = []
 
-            # Execute every tool call returned in this round.
+            # Execute every call returned in this round.
             for function_call in response.function_calls:
-                tool_result = self.executor.execute(function_call)
-
-                if not tool_result.get("success", False):
-                    failed = True
-                    error = tool_result.get("error", "Unknown tool error")
-                    round_results.append({
-                        "name": function_call.name,
-                        "result": f"ERROR: {error}",
-                    })
-                    continue
-
-                round_results.append({
+                result = self.executor.execute(function_call)
+                results.append({
                     "name": function_call.name,
-                    "result": tool_result.get("result", ""),
+                    **result,
                 })
 
-            all_results.extend(round_results)
+            # IMPORTANT: preserve the actual assistant tool-call message and
+            # tool results in the endpoint conversation. Do not turn them into
+            # a fake user prompt.
+            if hasattr(self.model, "add_tool_results"):
+                self.model.add_tool_results(response, results)
 
+            # Give the model a short continuation instruction. The actual tool
+            # outputs are already in the conversation as tool messages.
+            failed = any(not item.get("success", False) for item in results)
             if failed:
-                # Give the model the actual failure so it can recover, rather
-                # than exposing an internal traceback to the user.
-                current_query = (
-                    f"Continue the user's original task. This was tool round "
-                    f"{round_number + 1}. Some requested operations failed. "
-                    "Inspect the tool results below, correct the problem using "
-                    "the available tools, and continue until the original task "
-                    "is complete. Do not invent tool names or results.\n\n"
-                    f"Original request:\n{query}\n\n"
-                    f"Tool results:\n{self._format_results(round_results)}"
+                continuation = (
+                    "Continue the original task. One or more tool calls failed. "
+                    "Inspect the tool error messages, correct the problem with "
+                    "the registered tools, and continue. Do not claim an operation "
+                    "succeeded unless a tool result confirms it. Do not print tool "
+                    "call JSON."
                 )
-                continue
+            else:
+                continuation = (
+                    "Continue the original task from the tool results above. "
+                    "Perform every remaining requested operation. Do not repeat "
+                    "completed operations unless verification requires it. "
+                    "If another tool is needed, call it now. Only when the entire "
+                    "original task is actually complete should you give a concise "
+                    "final answer. Never claim a file was created, read, verified, "
+                    "or searched unless the corresponding tool result confirms it. "
+                    "Do not print tool-call JSON or internal reasoning."
+                )
 
-            # Feed the completed operations back into the model. This is what
-            # allows dependent workflows such as write -> read -> verify ->
-            # write report -> read report to continue across rounds.
-            current_query = (
-                "Continue executing the user's original request. You are in "
-                f"tool round {round_number + 1}. The following tools have just "
-                "finished successfully. Determine what remaining operations "
-                "are required. If more tools are needed, call them now. If the "
-                "entire request is complete, provide only a concise final answer. "
-                "Do not repeat completed operations unless verification or the "
-                "user's request requires it. Use only registered tools and do not "
-                "print tool-call JSON.\n\n"
-                f"Original request:\n{query}\n\n"
-                f"Results from this round:\n{self._format_results(round_results)}"
-            )
-
-        # The model kept requesting tools beyond the safety limit. Give a
-        # concise status instead of hanging forever.
         return self._response(
-            f"I stopped after {self.MAX_TOOL_ROUNDS} tool rounds to prevent an "
-            "endless execution loop."
+            f"I stopped after {self.MAX_TOOL_ROUNDS} tool rounds to prevent an endless loop."
         )
