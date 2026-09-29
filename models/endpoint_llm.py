@@ -29,6 +29,19 @@ class EndpointModel:
         self.model_name = model_name
         self.messages = []
         self.tools = get_tool_definitions()
+        self.valid_tool_names = self._get_valid_tool_names()
+
+    def _get_valid_tool_names(self):
+        names = set()
+        for tool in self.tools:
+            try:
+                function = tool["function"]
+                name = function.get("name")
+                if name:
+                    names.add(name)
+            except (AttributeError, KeyError, TypeError):
+                continue
+        return names
 
     def create_response(self, text: str):
         return ModelResponse(text=text, function_calls=[])
@@ -37,6 +50,7 @@ class EndpointModel:
         self.messages = []
         if tools is not None:
             self.tools = tools
+            self.valid_tool_names = self._get_valid_tool_names()
         if system_instruction:
             self.messages.append({
                 "role": "system",
@@ -57,8 +71,6 @@ class EndpointModel:
                 elif "description" in value and set(value).issubset(
                     {"type", "description"}
                 ):
-                    # Qwen 3B sometimes emits {type, description} where
-                    # description is actually the generated argument value.
                     cleaned[key] = value["description"]
                 else:
                     cleaned[key] = value
@@ -76,13 +88,50 @@ class EndpointModel:
             text = "\n".join(lines).strip()
         return text
 
+    def _normalize_tool_name(self, name):
+        """Map common model-invented aliases to registered tool names."""
+        if name in self.valid_tool_names:
+            return name
+
+        aliases = {
+            "create_file": "write_file",
+            "writeFile": "write_file",
+            "createFile": "write_file",
+            "readFile": "read_file",
+            "listFiles": "list_files",
+            "appendFile": "append_file",
+            "delete_file": "dlt_file",
+            "deleteFile": "dlt_file",
+            "remove_file": "dlt_file",
+            "removeFile": "dlt_file",
+            "search_web": "web_search",
+            "webSearch": "web_search",
+            "calculate_expression": "calculate",
+            "calculator": "calculate",
+            "retrieve": "retrieve_document",
+            "search_documents": "retrieve_document",
+            "index": "index_document",
+        }
+
+        normalized = aliases.get(name)
+        if normalized in self.valid_tool_names:
+            return normalized
+
+        return None
+
     def _make_call(self, parsed):
         if not isinstance(parsed, dict) or "name" not in parsed:
             return None
+
+        normalized_name = self._normalize_tool_name(parsed["name"])
+        if normalized_name is None:
+            return None
+
         args = parsed.get("arguments", {})
         if isinstance(args, str):
             args = json.loads(args)
-        return FunctionCallObj(parsed["name"], self.clean_args(args))
+
+        return FunctionCallObj(normalized_name, self.clean_args(args))
 
     def _parse_text_tool_calls(self, text: str):
         """Parse one, array, or consecutive JSON tool calls emitted as text."""
@@ -134,7 +183,13 @@ class EndpointModel:
                 args = fn.get("arguments", {})
                 if isinstance(args, str):
                     args = json.loads(args)
-                calls.append(FunctionCallObj(fn["name"], self.clean_args(args)))
+                normalized_name = self._normalize_tool_name(fn["name"])
+                if normalized_name is None:
+                    continue
+                calls.append(FunctionCallObj(
+                    normalized_name,
+                    self.clean_args(args),
+                ))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 continue
 
@@ -165,7 +220,6 @@ class EndpointModel:
             reply_text = choice.get("content", "") or ""
             function_calls = self._parse_tool_calls(choice)
 
-            # Do not store fake JSON tool calls as assistant text.
             if not function_calls:
                 self.messages.append({
                     "role": "assistant",
