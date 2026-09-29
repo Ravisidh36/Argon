@@ -3,6 +3,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Point HuggingFace cache to D: drive where there is plenty of disk space (200+ GB)
+# to avoid running out of disk space on drive C:.
+if not os.getenv("HF_HOME"):
+    os.environ["HF_HOME"] = "D:/cache/huggingface"
+if not os.getenv("HF_TOKEN") and os.getenv("HUGGINGFACEHUB_ACCESS_TOKEN"):
+    os.environ["HF_TOKEN"] = os.getenv("HUGGINGFACEHUB_ACCESS_TOKEN")
+
 # Option to use Gemini (API) or your Self-Hosted Custom Endpoint (No API Key)
 MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "endpoint")  # "endpoint" or "gemini"
 

@@ -4,6 +4,23 @@ from agent.context_builder import ContextBuilder
 
 class AgentLoop:
 
+    LLM_RESULT_TOOLS = {
+        "retrieve_document",
+        "read_file",
+        "list_files",
+        "calculate",
+        "web_search",
+    }
+
+    ACTION_TOOLS = {
+        "write_file",
+        "append_file",
+        "dlt_file",
+        "index_document",
+    }
+
+    MAX_TOOL_ROUNDS = 5
+
     def __init__(self, model):
         self.model = model
         self.executor = ToolExecutor()
@@ -15,25 +32,133 @@ class AgentLoop:
             system_instruction=system_instruction,
         )
 
+    def _response(self, text):
+        return self.model.create_response(text)
+
     def run(self, query):
 
-        response = self.model.generate(query)
+        # =====================================================
+        # TOOL LOOP
+        # =====================================================
 
-        # No tool call, return Gemini's answer directly
-        if not response.function_calls:
-            return response
+        current_query = query
 
-        # Execute the first tool call
-        function_call = response.function_calls[0]
-        tool_result = self.executor.execute(function_call)
+        for _ in range(self.MAX_TOOL_ROUNDS):
 
-        # Extract just the result string — executor returns {"success": bool, "result": str}
-        result_text = tool_result.get("result", str(tool_result)) if isinstance(tool_result, dict) else str(tool_result)
+            response = self.model.generate(current_query)
 
-        # Build context prompt using the clean result string
-        prompt = self.context_builder.build(query, result_text)
+            # -------------------------------------------------
+            # No tool call
+            # -------------------------------------------------
 
-        # Turn 2: send WITHOUT tool schemas so the model must answer in plain text
-        final_response = self.model.generate_no_tools(prompt)
+            if not response.function_calls:
+                return response
 
-        return final_response
+            results = []
+
+            # -------------------------------------------------
+            # Execute ALL tool calls returned by the model
+            # -------------------------------------------------
+
+            for function_call in response.function_calls:
+
+                tool_name = function_call.name
+
+                tool_result = self.executor.execute(
+                    function_call
+                )
+
+                if not tool_result.get("success", False):
+
+                    error = tool_result.get(
+                        "error",
+                        "Unknown tool error"
+                    )
+
+                    return self._response(
+                        f"Tool '{tool_name}' failed: {error}"
+                    )
+
+                results.append({
+                    "name": tool_name,
+                    "result": tool_result.get(
+                        "result",
+                        ""
+                    ),
+                })
+
+            # =================================================
+            # ACTION TOOLS
+            # =================================================
+
+            action_results = [
+                r for r in results
+                if r["name"] in self.ACTION_TOOLS
+            ]
+
+            # =================================================
+            # INFORMATION TOOLS
+            # =================================================
+
+            context_results = [
+                r for r in results
+                if r["name"] in self.LLM_RESULT_TOOLS
+            ]
+
+            # -------------------------------------------------
+            # Retrieval / read operations need LLM synthesis
+            # -------------------------------------------------
+
+            if context_results:
+
+                result_text = "\n\n".join(
+                    f"[{item['name']}]\n{item['result']}"
+                    for item in context_results
+                )
+
+                prompt = self.context_builder.build(
+                    query,
+                    result_text
+                )
+
+                return self.model.generate_no_tools(
+                    prompt
+                )
+
+            # -------------------------------------------------
+            # Action tools
+            #
+            # The operation already happened.
+            # Tell the model what happened and let it decide
+            # whether another tool is necessary.
+            # -------------------------------------------------
+
+            if action_results:
+
+                result_text = "\n".join(
+                    str(item["result"])
+                    for item in action_results
+                    if item["result"]
+                )
+
+                # Ask the model whether the user's request
+                # still requires another operation.
+                current_query = (
+                    f"The following tool operations were completed:\n\n"
+                    f"{result_text}\n\n"
+                    f"Original user request:\n{query}\n\n"
+                    "Continue completing the user's request. "
+                    "If more tool operations are required, call "
+                    "the appropriate tool. "
+                    "If the request is completely finished, "
+                    "give a short final response."
+                )
+
+        # -----------------------------------------------------
+        # Safety limit
+        # -----------------------------------------------------
+
+        return self._response(
+            "I stopped after reaching the maximum number "
+            "of tool operations."
+        )
