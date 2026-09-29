@@ -1,5 +1,6 @@
 import json
 import requests
+import uuid
 
 from config import LLM_ENDPOINT, MODEL_NAME
 from tools import get_tool_definitions
@@ -8,9 +9,10 @@ from tools import get_tool_definitions
 class FunctionCallObj:
     """Normalized tool call used by AgentLoop."""
 
-    def __init__(self, name: str, args: dict):
+    def __init__(self, name: str, args: dict, call_id=None):
         self.name = name
         self.args = args
+        self.call_id = call_id or f"call_{uuid.uuid4().hex[:12]}"
 
 
 class ModelResponse:
@@ -35,8 +37,7 @@ class EndpointModel:
         names = set()
         for tool in self.tools:
             try:
-                function = tool["function"]
-                name = function.get("name")
+                name = tool["function"].get("name")
                 if name:
                     names.add(name)
             except (AttributeError, KeyError, TypeError):
@@ -68,9 +69,7 @@ class EndpointModel:
             if isinstance(value, dict):
                 if "value" in value:
                     cleaned[key] = value["value"]
-                elif "description" in value and set(value).issubset(
-                    {"type", "description"}
-                ):
+                elif "description" in value and set(value).issubset({"type", "description"}):
                     cleaned[key] = value["description"]
                 else:
                     cleaned[key] = value
@@ -114,10 +113,7 @@ class EndpointModel:
         }
 
         normalized = aliases.get(name)
-        if normalized in self.valid_tool_names:
-            return normalized
-
-        return None
+        return normalized if normalized in self.valid_tool_names else None
 
     def _make_call(self, parsed):
         if not isinstance(parsed, dict) or "name" not in parsed:
@@ -131,7 +127,11 @@ class EndpointModel:
         if isinstance(args, str):
             args = json.loads(args)
 
-        return FunctionCallObj(normalized_name, self.clean_args(args))
+        return FunctionCallObj(
+            normalized_name,
+            self.clean_args(args),
+            parsed.get("id"),
+        )
 
     def _parse_text_tool_calls(self, text: str):
         """Parse one, array, or consecutive JSON tool calls emitted as text."""
@@ -177,6 +177,7 @@ class EndpointModel:
     def _parse_tool_calls(self, choice):
         native = choice.get("tool_calls") or []
         calls = []
+
         for tc in native:
             try:
                 fn = tc["function"]
@@ -189,6 +190,7 @@ class EndpointModel:
                 calls.append(FunctionCallObj(
                     normalized_name,
                     self.clean_args(args),
+                    tc.get("id"),
                 ))
             except (KeyError, TypeError, ValueError, json.JSONDecodeError):
                 continue
@@ -196,6 +198,45 @@ class EndpointModel:
         if calls:
             return calls
         return self._parse_text_tool_calls(choice.get("content", "") or "")
+
+    def add_tool_results(self, response, results):
+        """
+        Add the assistant tool-call message and corresponding tool messages to
+        the conversation. This follows the OpenAI/Ollama tool-calling protocol
+        instead of pretending tool results are ordinary user messages.
+        """
+        tool_calls = []
+        for call in response.function_calls:
+            tool_calls.append({
+                "id": call.call_id,
+                "type": "function",
+                "function": {
+                    "name": call.name,
+                    "arguments": json.dumps(call.args, ensure_ascii=False),
+                },
+            })
+
+        self.messages.append({
+            "role": "assistant",
+            "content": response.text or None,
+            "tool_calls": tool_calls,
+        })
+
+        for call, result in zip(response.function_calls, results):
+            if isinstance(result, dict):
+                if result.get("success", False):
+                    content = str(result.get("result", ""))
+                else:
+                    content = f"ERROR: {result.get('error', 'Unknown tool error')}"
+            else:
+                content = str(result)
+
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": call.call_id,
+                "name": call.name,
+                "content": content,
+            })
 
     def generate(self, content):
         self.messages.append({"role": "user", "content": str(content)})
