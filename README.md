@@ -1,115 +1,95 @@
 # Argon
 
-**Argon** is a local-first CLI AI agent for coding, document analysis, RAG, file-system automation, calculations, and web search. It is designed to behave like an actual command-line agent: the LLM selects tools, Argon executes them, real tool results are returned to the model, and the model can continue the task through multiple tool rounds.
-
-The current endpoint setup is designed around an **OpenAI-compatible API**, with **Ollama/Qwen** supported locally. Argon also contains a Gemini integration for API-based inference.
+**Argon** is a local-first CLI AI agent for coding, document analysis, RAG, file-system automation, calculations, and web search. It is designed to behave like an actual command-line agent: the LLM selects tools, Argon executes them, real tool results are preserved, and the agent can continue multi-step tasks until completion.
 
 ## Highlights
 
 - Local CLI AI agent
-- Multi-round tool execution
-- Native assistant/tool message handling for the endpoint model
-- Support for multiple tool calls in a single model response
+- Multi-round agent/tool execution
+- Multiple tool calls in a single model response
+- Native OpenAI-compatible tool-call handling
+- JSON-text fallback parsing for local models such as Qwen
+- Tool-name validation and alias normalization
 - File creation, reading, appending, listing, and deletion
 - Local document indexing and RAG retrieval
 - **Docling** document parsing
 - **BGE-M3** embeddings
 - **FAISS** vector search
-- **Cross-encoder reranking** using `cross-encoder/ms-marco-MiniLM-L-6-v2`
-- Model-specific vector-store isolation and embedding compatibility checks
+- **Cross-encoder reranking**
+- Model-specific FAISS indexes and embedding compatibility checks
 - Calculator tool
 - Web-search tool
 - Ollama / Qwen local inference
-- Gemini model integration
-- Tool-name normalization for common malformed/invented tool names
-- Protection against claiming an operation succeeded without an actual tool result
+- Gemini integration
 
 ## Architecture
 
 ```text
-                         ┌─────────────────────┐
-                         │      User / CLI      │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │      AgentLoop      │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │   LLM / Endpoint    │
-                         │   Tool Selection    │
-                         └──────────┬──────────┘
-                                    │
-                         tool calls │
-                                    ▼
-                         ┌─────────────────────┐
-                         │    ToolExecutor     │
-                         └──────────┬──────────┘
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              ▼                     ▼                     ▼
-       File-system tools       RAG tools             Other tools
-       write/read/list/        index/retrieve        calculator
-       append/delete                                 web_search
-              │                     │                     │
-              └─────────────────────┼─────────────────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │    Tool results     │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │ LLM continues task  │
-                         │  (next tool round)  │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │   Final response    │
-                         └─────────────────────┘
+                         User / CLI
+                             │
+                             ▼
+                        AgentLoop
+                             │
+                             ▼
+                    LLM / EndpointModel
+                             │
+                     Tool selection
+                             │
+                             ▼
+                      ToolExecutor
+                             │
+          ┌──────────────────┼──────────────────┐
+          ▼                  ▼                  ▼
+      File tools         RAG tools         Other tools
+   write/read/list/   index/retrieve      calculate
+    append/delete                         web_search
+          │                  │                  │
+          └──────────────────┼──────────────────┘
+                             ▼
+                       Tool results
+                             │
+                             ▼
+                  More tool rounds if needed
+                             │
+                             ▼
+                       Final response
 ```
 
 ## Agent Loop
 
-Argon's agent loop is intentionally multi-step. A complex request does not have to finish after one tool call.
+Argon's agent loop supports both independent and dependent multi-step workflows.
 
-For example:
+For independent operations, the model can request multiple tools in one response and Argon executes all returned calls.
+
+For dependent operations, tool results are preserved in the endpoint conversation so the model can request the next operation using the actual previous result.
+
+Example:
 
 ```text
 User request
     ↓
 Qwen selects write_file
     ↓
-Argon executes write_file
+Argon executes it
     ↓
-Actual tool result is recorded
+Tool result is recorded
     ↓
-Qwen sees the result
+Qwen requests read_file
     ↓
-Qwen selects read_file
+Argon executes it
     ↓
-Argon executes read_file
+Qwen verifies result
     ↓
-Qwen verifies the file
+Next required tool
     ↓
-Qwen selects calculate / retrieve_document / web_search / ...
-    ↓
-Task complete
-    ↓
-Short final response
+Final answer
 ```
 
-The current loop allows up to **8 tool rounds** to prevent an endless agent loop. Every tool call returned in a round is executed before the next model round. citeturn32file0
-
-The endpoint model preserves tool execution using the assistant/tool message protocol rather than turning tool results into fake user messages. This is particularly important for local models such as Qwen running through Ollama. citeturn33file0
+The loop has a configurable safety limit of 8 rounds to prevent infinite execution.
 
 ## Tool System
 
-Tool definitions are centralized in `tools/__init__.py` and exposed to the model using provider-agnostic function schemas. The current registered tools are: citeturn34file0
+Tool definitions are centralized in `tools/__init__.py`. The currently registered tools are:
 
 | Tool | Purpose |
 |---|---|
@@ -123,53 +103,54 @@ Tool definitions are centralized in `tools/__init__.py` and exposed to the model
 | `calculate` | Perform calculations |
 | `web_search` | Search the web for external/current information |
 
-### Tool execution reliability
+Tool execution is centralized in `agent/executor.py`.
 
-The endpoint client validates tool names against the registered tool set. It also normalizes common model-generated aliases such as `create_file` → `write_file`, `readFile` → `read_file`, `calculator` → `calculate`, and `search_documents` → `retrieve_document`. If a tool name cannot be mapped to a registered tool, it is not executed. citeturn33file0
+### Tool-call robustness
 
-The endpoint client also handles both native OpenAI-compatible `tool_calls` and models that output tool calls as JSON text. Multiple JSON tool calls can be parsed from one response. citeturn33file0
+The endpoint model supports:
+
+- Native OpenAI-compatible `tool_calls`
+- A single JSON tool call returned as text
+- Multiple JSON tool calls returned as separate JSON objects
+- JSON arrays of tool calls
+- Markdown-fenced JSON
+- Common malformed Qwen arguments
+- Common tool aliases such as `create_file` → `write_file`
+
+Unknown tool names are rejected rather than passed directly into the executor.
 
 ## File-System Automation
 
-The file tools allow Argon to perform actual file operations instead of merely printing code or commands for the user to execute.
+Argon can perform real filesystem operations rather than merely describing what the user should type.
 
 Example:
 
 ```text
-Create data/documents/test.txt containing hello, then read it and verify the contents.
+Create data/documents/example.txt containing hello and then verify its contents.
 ```
 
-The intended flow is:
+The intended workflow is:
 
 ```text
 write_file → read_file → final confirmation
 ```
 
-For a larger coding task, Argon can perform workflows such as:
+For multi-file tasks:
 
 ```text
-write input file
-      ↓
-write C++ program
-      ↓
-read input file
-      ↓
-read C++ program
-      ↓
-verify
-      ↓
-calculate
-      ↓
-write report
-      ↓
-read report
+write_file(a.txt)
+write_file(b.txt)
+read_file(a.txt)
+read_file(b.txt)
+    ↓
+final response
 ```
 
-The model is instructed to rely on actual tool results and not claim that a file was created, read, verified, or searched unless the corresponding operation returned a result. citeturn32file0
+The terminal should expose the useful final result rather than raw tool-call JSON.
 
 ## RAG Pipeline
 
-Argon's document retrieval pipeline combines structured document parsing, semantic embeddings, FAISS retrieval, and cross-encoder reranking.
+Argon's document pipeline combines structured parsing, semantic retrieval, and reranking:
 
 ```text
 PDF / Document
@@ -185,7 +166,7 @@ Structured / cleaned text
       │
       ▼
    BGE-M3
-   Embeddings
+  embeddings
       │
       ▼
     FAISS
@@ -206,27 +187,49 @@ Relevant chunks
 Grounded answer
 ```
 
-### BGE-M3
+### Document parsing
 
-The embedding layer uses `HuggingFaceEmbeddings` and the configured embedding model, which defaults to `BAAI/bge-m3`. Embeddings are normalized before indexing so FAISS L2 ranking corresponds to cosine-similarity ranking. citeturn37file0
+**Docling** is used to convert and structure document content before indexing.
+
+### Embeddings
+
+The embedding layer uses the configured Hugging Face embedding model and defaults to:
+
+```text
+BAAI/bge-m3
+```
+
+Embeddings are normalized before indexing.
 
 ### FAISS
 
-Vector indexes are stored separately for each embedding model. This prevents vectors from different embedding spaces from being accidentally mixed. The vector-store implementation also stores embedding-model metadata and checks it when loading an index.
+FAISS provides local vector search. Indexes are isolated by embedding model so vectors from incompatible embedding spaces are not accidentally mixed. Embedding metadata is stored alongside the index to detect model mismatches.
 
 ### Reranking
 
-Initial semantic retrieval produces a candidate pool. The candidates are then reranked using:
+The initial vector search retrieves a candidate pool. A cross-encoder then scores the query and candidate text together to improve relevance ordering.
+
+Current reranker:
 
 ```text
 cross-encoder/ms-marco-MiniLM-L-6-v2
 ```
 
-The cross-encoder evaluates the query and candidate text together, allowing Argon to reorder the retrieved chunks based on query-specific relevance rather than relying only on embedding similarity. citeturn36file0
+This gives Argon a two-stage retrieval architecture:
+
+```text
+Bi-encoder retrieval
+        ↓
+Candidate pool
+        ↓
+Cross-encoder reranking
+        ↓
+Top relevant chunks
+```
 
 ## Document Grounding
 
-For questions about indexed documents, Argon is intended to answer from retrieved document content rather than inventing information.
+For questions about indexed local documents, Argon is designed to answer using retrieved document evidence.
 
 Example:
 
@@ -234,45 +237,53 @@ Example:
 What holidays are mentioned in 3.pdf?
 ```
 
-The retrieval pipeline should provide relevant chunks from `3.pdf`, after which the LLM generates an answer from those chunks.
-
-A retrieval system can still fail if the document is parsed poorly, the relevant information is not retrieved, or the LLM misinterprets the retrieved context. RAG therefore depends on the complete pipeline:
+The intended workflow is:
 
 ```text
-Parsing → chunking → embedding → retrieval → reranking → generation
+retrieve_document
+      ↓
+relevant chunks
+      ↓
+reranking
+      ↓
+LLM synthesis
+```
+
+The system should not invent dates or facts that are absent from the retrieved material.
+
+RAG quality depends on the entire pipeline:
+
+```text
+Parsing → Chunking → Embeddings → Retrieval → Reranking → Generation
 ```
 
 ## Local LLM with Ollama
 
-Argon supports an OpenAI-compatible local endpoint. The current configuration defaults to:
+Argon supports an OpenAI-compatible endpoint and can run against a local Ollama model.
+
+Current development setup:
 
 ```text
-Endpoint:
-http://localhost:8000/v1/chat/completions
-
 Model:
 qwen2.5-coder:3b
-```
 
-Both values can be overridden through environment variables. The model provider defaults to the local endpoint provider. Gemini is available as an alternative provider. citeturn35file0
-
-For Ollama, the model must be installed and running locally. A typical Ollama-compatible endpoint is:
-
-```text
+Typical Ollama endpoint:
 http://localhost:11434/v1/chat/completions
 ```
 
-The endpoint client sends tool schemas to the model and parses the returned tool calls before passing them to Argon's `ToolExecutor`. citeturn33file0
+The exact endpoint and model are configurable through environment variables.
+
+The endpoint client sends tool definitions to the model and converts the model response into normalized internal tool calls before handing them to `ToolExecutor`.
 
 ## Gemini
 
-Argon also contains a Gemini integration. The configured Gemini model defaults to:
+Argon also contains a Gemini model integration. The configured Gemini chat model defaults to:
 
 ```text
 gemini-2.5-flash
 ```
 
-when the Gemini provider is selected. citeturn35file0
+The agent loop is designed to work through a common model interface rather than embedding provider-specific logic in the orchestration layer.
 
 ## Project Structure
 
@@ -283,7 +294,7 @@ Argon/
 │   └── loop.py              # Multi-round agent loop
 │
 ├── models/
-│   ├── endpoint_llm.py      # OpenAI-compatible endpoint client
+│   ├── endpoint_llm.py      # Ollama / OpenAI-compatible endpoint client
 │   └── gemini.py            # Gemini integration
 │
 ├── retrieval/
@@ -295,28 +306,28 @@ Argon/
 │
 ├── tools/
 │   ├── __init__.py          # Tool definitions
-│   ├── file_access.py       # File-system operations
+│   ├── file_access.py       # File-system tools
 │   ├── calculator.py        # Calculator
 │   └── web_search.py        # Web search
 │
 ├── data/
 │   └── documents/           # Local documents and generated files
 │
-├── vector_store/            # Local FAISS indexes and document registries
-├── config.py                # Model/provider configuration
+├── vector_store/            # FAISS indexes and document registry
+├── config.py                # Configuration
 ├── main.py                  # CLI entry point
 └── README.md
 ```
 
 ## Configuration
 
-Configuration is loaded through environment variables using `python-dotenv`.
+Configuration is loaded through environment variables.
 
-Important settings include:
+Typical settings:
 
 ```text
 MODEL_PROVIDER=endpoint
-LLM_ENDPOINT=http://localhost:8000/v1/chat/completions
+LLM_ENDPOINT=http://localhost:11434/v1/chat/completions
 MODEL_NAME=qwen2.5-coder:3b
 EMBEDDING_MODEL=BAAI/bge-m3
 ```
@@ -329,28 +340,23 @@ GEMINI_API_KEY=your_key
 CHAT_MODEL=gemini-2.5-flash
 ```
 
-The repository also configures a Hugging Face cache location through `HF_HOME` when one is not already provided. citeturn35file0
+The application also supports configuring the Hugging Face cache location through `HF_HOME`.
 
 ## Installation
 
-Create and activate a virtual environment:
+Create a virtual environment and install dependencies.
 
 ### Windows
 
 ```bat
 python -m venv .venv
 .venv\Scripts\activate
-```
-
-Install the project dependencies:
-
-```bat
 pip install -r requirements.txt
 ```
 
 Configure the required environment variables in `.env`.
 
-For local inference, make sure Ollama is installed and the configured model is available.
+For local inference, make sure Ollama is running and the configured model is installed.
 
 ## Running Argon
 
@@ -360,7 +366,7 @@ From the project root:
 python main.py
 ```
 
-Argon then accepts requests directly from the terminal.
+Argon then accepts requests directly in the terminal.
 
 Exit with:
 
@@ -370,25 +376,25 @@ Exit with:
 
 ## Example Requests
 
-### Create and verify a file
+### File operation
 
 ```text
-Create data/documents/example.txt containing hello, then read the file and verify its contents.
+Create data/documents/example.txt containing hello.
 ```
 
-### Create a C++ program using file input
+### File workflow
 
 ```text
-Create data/documents/input.txt containing 10 20 30, then create data/documents/program.cpp that reads the numbers using ifstream instead of hardcoding them, and verify both files.
+Create data/documents/input.txt containing 10, create a C++ program that reads it using ifstream, then read both files and verify them.
 ```
 
-### RAG query
+### RAG
 
 ```text
 What holidays are mentioned in 3.pdf?
 ```
 
-### Calculation
+### Calculator
 
 ```text
 Calculate (42 * 18) + 100.
@@ -403,70 +409,64 @@ Search the web for the current weather in Jaipur.
 ### Multi-tool workflow
 
 ```text
-Create the required files, read them to verify their contents, calculate the requested values, retrieve information from indexed documents, search the web for current information, create a report containing the results, and read the report to verify it.
+Create the required files, verify them, calculate the requested values, retrieve information from indexed documents, search the web for current information, create a report, and read the report to verify it.
 ```
 
 ## Design Principles
 
-### 1. Execute actions instead of describing them
+### Execute actions, don't describe them
 
-When the user asks Argon to create or modify a file, the corresponding file tool should perform the operation. The final response should summarize the completed operation instead of dumping tool-call JSON.
+When the user asks Argon to create, modify, or delete a file, the corresponding tool should perform the operation.
 
-### 2. Trust tool results
+### Trust actual tool results
 
-The model should not claim that an operation succeeded merely because it intended to call a tool. Actual tool results are the source of truth for execution status.
+Argon should not claim that a file was created, read, verified, indexed, calculated, or searched unless a corresponding tool result confirms the operation.
 
-### 3. Preserve tool-call state
+### Preserve tool state
 
-Tool calls and their results are preserved using the assistant/tool protocol so the model can perform dependent operations across multiple rounds. citeturn33file0
+Tool calls and their results are preserved so dependent workflows can continue across multiple rounds.
 
-### 4. Ground document answers
+### Ground document answers
 
-Retrieved chunks are evidence for document questions. The generation step should not invent facts that are absent from the retrieved material.
+Retrieved document chunks are treated as evidence for local-document questions. The final answer should stay within the retrieved evidence.
 
-### 5. Keep the CLI usable
+### Keep the CLI clean
 
-Intermediate tool-call JSON, internal reasoning, schemas, and raw retrieval data should not be presented as the user's final answer.
+Raw tool JSON, tool schemas, internal instructions, and intermediate retrieval data should not be printed as the final user-facing answer.
 
 ## Current Limitations
 
-Argon is still an actively developed agent and small local models can make mistakes. In particular:
+Argon is an actively developed personal AI-agent project. Small local models can still make mistakes, including incorrect tool selection, malformed arguments, incomplete task planning, or unnecessary extra inference rounds.
 
-- Small models may select the wrong tool.
-- Models may produce malformed JSON arguments.
-- A local model may need multiple inference rounds for complex tasks.
-- Tool-call generation can be slower for long prompts or large tool schemas.
-- RAG quality depends on parsing, chunking, embeddings, retrieval, and reranking.
-- The model can still misunderstand retrieved evidence even when retrieval itself is correct.
-- Web-search results are external information and should be distinguished from local-document results.
+RAG quality depends on document parsing, chunking, embedding, retrieval, reranking, and generation. Correct retrieval does not by itself guarantee a correct final answer.
 
-The endpoint client includes argument normalization, tool-name validation, JSON tool-call parsing, native tool-message handling, and a request timeout to make these failures more manageable. citeturn33file0
+Local LLM inference speed depends on the selected model, hardware, prompt size, tool-schema size, and number of inference rounds.
 
 ## Development Status
 
-Argon is a work-in-progress personal AI-agent project focused on building a practical local CLI agent with reliable tool execution and grounded document retrieval.
-
-The current architecture emphasizes:
+Argon is a work-in-progress project focused on building a practical local CLI agent that combines:
 
 ```text
 Local LLM
-   +
+    +
 Tool Calling
-   +
+    +
 Multi-step Execution
-   +
+    +
 Docling
-   +
+    +
 BGE-M3
-   +
+    +
 FAISS
-   +
+    +
 Cross-Encoder Reranking
-   +
+    +
 File-System Automation
-   +
+    +
+Calculator
+    +
 Web Search
-   =
+    =
 Argon
 ```
 
